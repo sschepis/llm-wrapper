@@ -1,0 +1,23 @@
+# Source
+src/
+tests/
+examples/
+docs/
+
+# Config
+tsconfig.json
+tsup.config.ts
+vitest.config.ts
+.gitignore
+.env
+.env.*
+
+# Dev
+node_modules/
+*.tsbuildinfo
+.claude/
+in.txt
+
+# IDE
+.vscode/
+.idea/
