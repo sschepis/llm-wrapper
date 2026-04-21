@@ -1,6 +1,6 @@
 {
   "name": "@sschepis/llm-wrapper",
-  "version": "0.1.1",
+  "version": "0.1.8",
   "description": "Unified LLM wrapper standardizing interactions across providers using the OpenAI Chat Completion format",
   "author": "Sebastian Schepis",
   "repository": {
@@ -60,26 +60,34 @@
     "zod": "^3.23.0"
   },
   "peerDependencies": {
-    "openai": "^4.0.0",
     "@anthropic-ai/sdk": "^0.30.0",
+    "@google-cloud/vertexai": "^1.9.0",
     "@google/generative-ai": "^0.21.0",
-    "@google-cloud/vertexai": "^1.9.0"
+    "openai": "^4.0.0"
   },
   "peerDependenciesMeta": {
-    "openai": { "optional": true },
-    "@anthropic-ai/sdk": { "optional": true },
-    "@google/generative-ai": { "optional": true },
-    "@google-cloud/vertexai": { "optional": true }
+    "openai": {
+      "optional": true
+    },
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "@google/generative-ai": {
+      "optional": true
+    },
+    "@google-cloud/vertexai": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "tsup": "^8.3.0",
-    "typescript": "^5.6.0",
-    "vitest": "^2.1.0",
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@google-cloud/vertexai": "^1.9.0",
+    "@google/generative-ai": "^0.21.0",
     "@types/node": "^22.0.0",
     "openai": "^4.0.0",
-    "@anthropic-ai/sdk": "^0.30.0",
-    "@google/generative-ai": "^0.21.0",
-    "@google-cloud/vertexai": "^1.9.0"
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
   },
   "engines": {
     "node": ">=18.0.0"
