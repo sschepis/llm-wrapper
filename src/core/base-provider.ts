@@ -13,9 +13,9 @@ export abstract class BaseProvider {
 
   constructor(config: ProviderConfig) {
     this.config = {
-      maxRetries: 3,
-      timeout: 60_000,
       ...config,
+      maxRetries: config.maxRetries ?? 3,
+      timeout: config.timeout ?? 60_000,
     };
   }
 
