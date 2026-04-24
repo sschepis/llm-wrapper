@@ -29,8 +29,18 @@ export class AnthropicProvider extends BaseProvider {
 
   protected async doChat(params: StandardChatParams): Promise<StandardChatResponse> {
     const anthropicParams = this.transformRequest(params);
-    const response = await this.client.messages.create(anthropicParams as any);
-    return this.transformResponse(response);
+    try {
+      const response = await this.client.messages.create(anthropicParams as any);
+      return this.transformResponse(response);
+    } catch (err: any) {
+      if (this.isTemperatureDeprecatedError(err)) {
+        delete (anthropicParams as any).temperature;
+        delete (anthropicParams as any).top_p;
+        const response = await this.client.messages.create(anthropicParams as any);
+        return this.transformResponse(response);
+      }
+      throw err;
+    }
   }
 
   protected async *doStream(params: StandardChatParams): AsyncIterable<StandardChatChunk> {
@@ -200,8 +210,9 @@ export class AnthropicProvider extends BaseProvider {
     };
 
     if (system) result.system = system;
-    if (params.temperature !== undefined) result.temperature = params.temperature;
-    if (params.top_p !== undefined) result.top_p = params.top_p;
+    const supportsTemp = this.supportsTemperature(params.model);
+    if (supportsTemp && params.temperature !== undefined) result.temperature = params.temperature;
+    if (supportsTemp && params.top_p !== undefined) result.top_p = params.top_p;
     if (params.stop) result.stop_sequences = Array.isArray(params.stop) ? params.stop : [params.stop];
 
     if (params.tools?.length) {
@@ -365,5 +376,15 @@ export class AnthropicProvider extends BaseProvider {
       stop_sequence: 'stop',
     };
     return map[reason] ?? 'stop';
+  }
+
+  private supportsTemperature(model: string): boolean {
+    const m = model.toLowerCase();
+    return !/claude-(4|opus-4|sonnet-4)/.test(m);
+  }
+
+  protected isTemperatureDeprecatedError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    return msg.includes('temperature') && msg.includes('deprecated');
   }
 }

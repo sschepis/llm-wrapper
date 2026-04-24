@@ -33,6 +33,9 @@ export const ToolCallSchema = z.object({
     name: z.string(),
     arguments: z.string(), // JSON string, matching OpenAI
   }),
+  // Gemini 3.x returns an opaque signature on functionCall parts that must
+  // be echoed back on subsequent turns when tools are enabled.
+  thought_signature: z.string().optional(),
 });
 
 export type ToolCall = z.infer<typeof ToolCallSchema>;
@@ -142,6 +145,7 @@ export const DeltaSchema = z.object({
       name: z.string().optional(),
       arguments: z.string().optional(),
     }).optional(),
+    thought_signature: z.string().optional(),
   })).optional(),
 });
 

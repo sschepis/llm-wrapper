@@ -9,6 +9,7 @@ import type {
 } from '@google/generative-ai';
 import { BaseProvider } from '../core/base-provider.js';
 import { LLMError, LLMErrorCode } from '../core/errors.js';
+import { sanitizeGeminiSchema } from './gemini-schema.js';
 import type {
   StandardChatParams,
   StandardChatResponse,
@@ -52,38 +53,48 @@ export class GeminiProvider extends BaseProvider {
 
     const id = this.generateId();
     const created = Math.floor(Date.now() / 1000);
-    let previousText = '';
     let emittedRole = false;
+    // Gemini streams are cumulative for tool calls — the same functionCall
+    // part can re-appear in every subsequent chunk. Track emitted ones so
+    // the aggregator does not concatenate identical JSON into invalid args.
+    const emittedToolCallKeys = new Set<string>();
+    let emittedToolCallIndex = 0;
 
     for await (const chunk of result.stream) {
       const candidate = chunk.candidates?.[0];
       if (!candidate) continue;
 
       const parts = candidate.content?.parts ?? [];
-      let textDelta = '';
       const toolCalls: StandardChatChunk['choices'][0]['delta']['tool_calls'] = [];
 
-      // Compute text delta
-      let fullText = '';
+      // Gemini text streaming is INCREMENTAL per chunk — each chunk's parts
+      // contain only the new text since the last chunk, not the cumulative
+      // total. Emit `textDelta` directly; do not slice against prior state.
+      let textDelta = '';
       for (const part of parts) {
+        // Skip thought parts — those are the model's internal reasoning, not the answer.
+        if ((part as any).thought === true) continue;
         if ('text' in part && part.text) {
-          fullText += part.text;
+          textDelta += part.text;
         }
         if ('functionCall' in part && part.functionCall) {
+          const argsJson = JSON.stringify(part.functionCall.args ?? {});
+          const key = `${part.functionCall.name}|${argsJson}`;
+          if (emittedToolCallKeys.has(key)) continue;
+          emittedToolCallKeys.add(key);
+          const sig = (part as any).thoughtSignature;
           toolCalls.push({
-            index: toolCalls.length,
+            index: emittedToolCallIndex++,
             id: this.generateId(),
             type: 'function',
             function: {
               name: part.functionCall.name,
-              arguments: JSON.stringify(part.functionCall.args ?? {}),
+              arguments: argsJson,
             },
+            ...(sig ? { thought_signature: sig } : {}),
           });
         }
       }
-
-      textDelta = fullText.slice(previousText.length);
-      previousText = fullText;
 
       const delta: StandardChatChunk['choices'][0]['delta'] = {};
       if (!emittedRole) {
@@ -177,7 +188,7 @@ export class GeminiProvider extends BaseProvider {
         functionDeclarations: params.tools.map(t => ({
           name: t.function.name,
           description: t.function.description,
-          parameters: t.function.parameters,
+          parameters: sanitizeGeminiSchema(t.function.parameters),
         })),
       }];
 
@@ -245,15 +256,21 @@ export class GeminiProvider extends BaseProvider {
         }
       }
 
-      // Handle tool calls in assistant messages
+      // Handle tool calls in assistant messages.
+      // Gemini 3.x REQUIRES thought_signature on every functionCall part.
+      // Skip function call parts that lost their signature (e.g. replayed
+      // from session history) to avoid a 400 error.
       if (msg.tool_calls) {
         for (const tc of msg.tool_calls) {
-          parts.push({
+          if (!tc.thought_signature) continue;
+          const part: any = {
             functionCall: {
               name: tc.function.name,
               args: JSON.parse(tc.function.arguments),
             },
-          } as Part);
+            thoughtSignature: tc.thought_signature,
+          };
+          parts.push(part as Part);
         }
       }
 
@@ -283,10 +300,13 @@ export class GeminiProvider extends BaseProvider {
 
     if (candidate?.content?.parts) {
       for (const part of candidate.content.parts) {
+        // Skip thought parts — those are internal reasoning, not the answer.
+        if ((part as any).thought === true) continue;
         if ('text' in part && part.text) {
           textContent += part.text;
         }
         if ('functionCall' in part && part.functionCall) {
+          const sig = (part as any).thoughtSignature;
           toolCalls.push({
             id: this.generateId(),
             type: 'function',
@@ -294,6 +314,7 @@ export class GeminiProvider extends BaseProvider {
               name: part.functionCall.name,
               arguments: JSON.stringify(part.functionCall.args ?? {}),
             },
+            ...(sig ? { thought_signature: sig } : {}),
           });
         }
       }

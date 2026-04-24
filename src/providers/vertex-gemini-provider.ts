@@ -1,6 +1,7 @@
 import type { VertexAI, GenerativeModel } from '@google-cloud/vertexai';
 import { BaseProvider } from '../core/base-provider.js';
 import { LLMError, LLMErrorCode } from '../core/errors.js';
+import { sanitizeGeminiSchema } from './gemini-schema.js';
 import type {
   StandardChatParams,
   StandardChatResponse,
@@ -50,8 +51,9 @@ export class VertexGeminiProvider extends BaseProvider {
 
     const id = this.generateId();
     const created = Math.floor(Date.now() / 1000);
-    let previousText = '';
     let emittedRole = false;
+    const emittedToolCallKeys = new Set<string>();
+    let emittedToolCallIndex = 0;
 
     for await (const chunk of result.stream) {
       const candidate = chunk.candidates?.[0];
@@ -59,25 +61,31 @@ export class VertexGeminiProvider extends BaseProvider {
 
       const parts = candidate.content?.parts ?? [];
       const toolCalls: StandardChatChunk['choices'][0]['delta']['tool_calls'] = [];
-      let fullText = '';
+      // Gemini streams text incrementally — each chunk's parts carry only
+      // new text. Emit directly; do not slice against prior state.
+      let textDelta = '';
 
       for (const part of parts) {
-        if ('text' in part && part.text) fullText += part.text;
+        if ((part as any).thought === true) continue;
+        if ('text' in part && part.text) textDelta += part.text;
         if ('functionCall' in part && part.functionCall) {
+          const argsJson = JSON.stringify(part.functionCall.args ?? {});
+          const key = `${part.functionCall.name}|${argsJson}`;
+          if (emittedToolCallKeys.has(key)) continue;
+          emittedToolCallKeys.add(key);
+          const sig = (part as any).thoughtSignature;
           toolCalls.push({
-            index: toolCalls.length,
+            index: emittedToolCallIndex++,
             id: this.generateId(),
             type: 'function',
             function: {
               name: part.functionCall.name,
-              arguments: JSON.stringify(part.functionCall.args ?? {}),
+              arguments: argsJson,
             },
+            ...(sig ? { thought_signature: sig } : {}),
           });
         }
       }
-
-      const textDelta = fullText.slice(previousText.length);
-      previousText = fullText;
 
       const delta: StandardChatChunk['choices'][0]['delta'] = {};
       if (!emittedRole) { delta.role = 'assistant'; emittedRole = true; }
@@ -142,7 +150,7 @@ export class VertexGeminiProvider extends BaseProvider {
         functionDeclarations: params.tools.map(t => ({
           name: t.function.name,
           description: t.function.description,
-          parameters: t.function.parameters,
+          parameters: sanitizeGeminiSchema(t.function.parameters),
         })),
       }];
       if (params.tool_choice) {
@@ -192,8 +200,10 @@ export class VertexGeminiProvider extends BaseProvider {
       }
       if (msg.tool_calls) {
         for (const tc of msg.tool_calls) {
+          if (!tc.thought_signature) continue;
           parts.push({
             functionCall: { name: tc.function.name, args: JSON.parse(tc.function.arguments) },
+            thoughtSignature: tc.thought_signature,
           });
         }
       }
@@ -221,8 +231,10 @@ export class VertexGeminiProvider extends BaseProvider {
 
     if (candidate?.content?.parts) {
       for (const part of candidate.content.parts) {
+        if (part.thought === true) continue;
         if (part.text) textContent += part.text;
         if (part.functionCall) {
+          const sig = part.thoughtSignature;
           toolCalls.push({
             id: this.generateId(),
             type: 'function',
@@ -230,6 +242,7 @@ export class VertexGeminiProvider extends BaseProvider {
               name: part.functionCall.name,
               arguments: JSON.stringify(part.functionCall.args ?? {}),
             },
+            ...(sig ? { thought_signature: sig } : {}),
           });
         }
       }

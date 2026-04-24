@@ -18,7 +18,7 @@ export async function aggregateStream(
   let role: Message['role'] = 'assistant';
   let content = '';
   let finishReason: 'stop' | 'tool_calls' | 'length' | 'content_filter' | null = null;
-  const toolCallsMap = new Map<number, { id: string; name: string; arguments: string }>();
+  const toolCallsMap = new Map<number, { id: string; name: string; arguments: string; thought_signature?: string }>();
   let usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 
   for await (const chunk of stream) {
@@ -37,11 +37,13 @@ export async function aggregateStream(
           if (existing) {
             if (tc.function?.name) existing.name = tc.function.name;
             if (tc.function?.arguments) existing.arguments += tc.function.arguments;
+            if (tc.thought_signature) existing.thought_signature = tc.thought_signature;
           } else {
             toolCallsMap.set(tc.index, {
               id: tc.id ?? '',
               name: tc.function?.name ?? '',
               arguments: tc.function?.arguments ?? '',
+              ...(tc.thought_signature ? { thought_signature: tc.thought_signature } : {}),
             });
           }
         }
@@ -59,6 +61,7 @@ export async function aggregateStream(
       id: tc.id,
       type: 'function',
       function: { name: tc.name, arguments: tc.arguments },
+      ...(tc.thought_signature ? { thought_signature: tc.thought_signature } : {}),
     });
   }
 

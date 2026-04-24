@@ -1,6 +1,6 @@
 {
   "name": "@sschepis/llm-wrapper",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "description": "Unified LLM wrapper standardizing interactions across providers using the OpenAI Chat Completion format",
   "author": "Sebastian Schepis",
   "repository": {
