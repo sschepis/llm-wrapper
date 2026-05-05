@@ -2,15 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { GeminiProvider } from '../../src/providers/gemini-provider.js';
 import { aggregateStream } from '../../src/utils/stream-aggregator.js';
 import type { StandardChatParams, StandardChatChunk, ToolCall } from '../../src/core/types.js';
-import type { GenerateContentResult } from '@google/generative-ai';
 
 // Expose protected transform methods for testing.
 class TestableGeminiProvider extends GeminiProvider {
   public testTransformRequest(params: StandardChatParams) {
     return (this as any).transformRequest(params);
   }
-  public testTransformResponse(result: GenerateContentResult, model: string) {
-    return (this as any).transformResponse(result, model);
+  public testTransformResponse(response: any, model: string) {
+    return (this as any).transformResponse(response, model);
   }
 }
 
@@ -21,27 +20,25 @@ function mkProvider() {
 describe('GeminiProvider thought_signature round-trip', () => {
   it('captures thoughtSignature from non-streaming response', () => {
     const provider = mkProvider();
-    const result = {
-      response: {
-        candidates: [
-          {
-            content: {
-              role: 'model',
-              parts: [
-                {
-                  functionCall: { name: 'terminal', args: { cmd: 'ls' } },
-                  thoughtSignature: 'SIG-ABC-123',
-                },
-              ],
-            },
-            finishReason: 'STOP',
+    const response = {
+      candidates: [
+        {
+          content: {
+            role: 'model',
+            parts: [
+              {
+                functionCall: { name: 'terminal', args: { cmd: 'ls' } },
+                thoughtSignature: 'SIG-ABC-123',
+              },
+            ],
           },
-        ],
-        usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
-      },
-    } as unknown as GenerateContentResult;
+          finishReason: 'STOP',
+        },
+      ],
+      usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+    };
 
-    const std = provider.testTransformResponse(result, 'gemini-3.1-pro-preview');
+    const std = provider.testTransformResponse(response, 'gemini-3.1-pro-preview');
     const tc = std.choices[0].message.tool_calls?.[0];
     expect(tc).toBeDefined();
     expect(tc!.function.name).toBe('terminal');
@@ -85,32 +82,30 @@ describe('GeminiProvider thought_signature round-trip', () => {
 
   it('SKIPS thought-parts when concatenating response text (non-streaming)', () => {
     const provider = mkProvider();
-    const result = {
-      response: {
-        candidates: [
-          {
-            content: {
-              role: 'model',
-              parts: [
-                { thought: true, text: 'Let me plan this: user wants X, I should ' },
-                { text: 'The answer is 42.' },
-                { thought: true, text: ' then finalize with the key number.' },
-              ],
-            },
-            finishReason: 'STOP',
+    const response = {
+      candidates: [
+        {
+          content: {
+            role: 'model',
+            parts: [
+              { thought: true, text: 'Let me plan this: user wants X, I should ' },
+              { text: 'The answer is 42.' },
+              { thought: true, text: ' then finalize with the key number.' },
+            ],
           },
-        ],
-      },
-    } as unknown as GenerateContentResult;
+          finishReason: 'STOP',
+        },
+      ],
+    };
 
-    const std = provider.testTransformResponse(result, 'gemini-3.1-pro-preview');
+    const std = provider.testTransformResponse(response, 'gemini-3.1-pro-preview');
     const content = std.choices[0].message.content;
     expect(content).toBe('The answer is 42.');
     expect(content).not.toContain('plan');
     expect(content).not.toContain('finalize');
   });
 
-  it('omits thoughtSignature when none was captured', () => {
+  it('includes tool calls without thoughtSignature from contents (backwards compatibility)', () => {
     const provider = mkProvider();
     const params: StandardChatParams = {
       model: 'gemini-3.1-pro-preview',
@@ -130,14 +125,12 @@ describe('GeminiProvider thought_signature round-trip', () => {
     };
 
     const { contents } = provider.testTransformRequest(params);
-    const fcPart = contents[0].parts.find((p: any) => p.functionCall) as any;
-    expect(fcPart.thoughtSignature).toBeUndefined();
+    expect(contents.length).toBe(1);
+    expect(contents[0].parts[0].functionCall.name).toBe('terminal');
+    expect(contents[0].parts[0].thoughtSignature).toBeUndefined();
   });
 
   it('STREAMING: mock Gemini SDK stream skips thought parts', async () => {
-    // Build a fake Gemini stream that interleaves thought and answer parts,
-    // then exercise the real doStream logic. We stub the SDK by replacing
-    // the provider's getModel method.
     const provider = mkProvider();
 
     async function* fakeStream() {
@@ -161,9 +154,11 @@ describe('GeminiProvider thought_signature round-trip', () => {
       };
     }
 
-    (provider as any).getModel = () => ({
-      generateContentStream: async () => ({ stream: fakeStream() }),
-    });
+    (provider as any).genAI = {
+      models: {
+        generateContentStream: async () => fakeStream(),
+      },
+    };
 
     const params: StandardChatParams = {
       model: 'gemini-3.1-pro-preview',
@@ -181,7 +176,6 @@ describe('GeminiProvider thought_signature round-trip', () => {
   });
 
   it('STREAMING: aggregateStream preserves thought_signature through chunks', async () => {
-    // Emulate what the Gemini provider's streaming code emits.
     const chunks: StandardChatChunk[] = [
       {
         id: 'chunk1',
@@ -227,17 +221,17 @@ describe('GeminiProvider thought_signature round-trip', () => {
   it('STREAMING: emits each chunk\'s text delta correctly (incremental streams, not cumulative)', async () => {
     const provider = mkProvider();
 
-    // Gemini streams are incremental: each chunk's parts contain NEW text
-    // only, not the cumulative text so far.
     async function* fakeStream() {
       yield { candidates: [{ content: { role: 'model', parts: [{ text: 'Here is ' }] } }] };
       yield { candidates: [{ content: { role: 'model', parts: [{ text: 'a comprehensive ' }] } }] };
       yield { candidates: [{ content: { role: 'model', parts: [{ text: 'analysis.' }] }, finishReason: 'STOP' }] };
     }
 
-    (provider as any).getModel = () => ({
-      generateContentStream: async () => ({ stream: fakeStream() }),
-    });
+    (provider as any).genAI = {
+      models: {
+        generateContentStream: async () => fakeStream(),
+      },
+    };
 
     const params: StandardChatParams = {
       model: 'gemini-3.1-pro-preview',
@@ -266,9 +260,11 @@ describe('GeminiProvider thought_signature round-trip', () => {
       ]}, finishReason: 'STOP' }]};
     }
 
-    (provider as any).getModel = () => ({
-      generateContentStream: async () => ({ stream: fakeStream() }),
-    });
+    (provider as any).genAI = {
+      models: {
+        generateContentStream: async () => fakeStream(),
+      },
+    };
 
     let accumulated = '';
     for await (const chunk of (provider as any).doStream({
@@ -283,10 +279,6 @@ describe('GeminiProvider thought_signature round-trip', () => {
   it('STREAMING: does not duplicate tool-call arguments when Gemini emits functionCall in multiple cumulative chunks', async () => {
     const provider = mkProvider();
 
-    // Gemini streaming often re-emits the same functionCall part in
-    // successive chunks (cumulative stream). The provider must emit the
-    // tool call only once so the aggregator does not concatenate
-    // identical JSON into invalid "{...}{...}".
     async function* fakeStream() {
       const fcPart = {
         functionCall: { name: 'read_file', args: { path: '/tmp/a', lines: 10 } },
@@ -305,9 +297,11 @@ describe('GeminiProvider thought_signature round-trip', () => {
       };
     }
 
-    (provider as any).getModel = () => ({
-      generateContentStream: async () => ({ stream: fakeStream() }),
-    });
+    (provider as any).genAI = {
+      models: {
+        generateContentStream: async () => fakeStream(),
+      },
+    };
 
     const params: StandardChatParams = {
       model: 'gemini-3.1-pro-preview',
@@ -323,7 +317,6 @@ describe('GeminiProvider thought_signature round-trip', () => {
 
     const tc = aggregated.choices[0].message.tool_calls?.[0];
     expect(tc).toBeDefined();
-    // The args JSON must parse cleanly — no duplication.
     const parsed = JSON.parse(tc!.function.arguments);
     expect(parsed).toEqual({ path: '/tmp/a', lines: 10 });
   });
@@ -331,31 +324,27 @@ describe('GeminiProvider thought_signature round-trip', () => {
   it('full round-trip: response → next request preserves signature byte-for-byte', () => {
     const provider = mkProvider();
 
-    // 1. Gemini returns a functionCall with a signature
-    const result = {
-      response: {
-        candidates: [
-          {
-            content: {
-              role: 'model',
-              parts: [
-                {
-                  functionCall: { name: 'read_file', args: { path: '/etc/hosts' } },
-                  thoughtSignature: 'opaque-base64-blob==',
-                },
-              ],
-            },
-            finishReason: 'STOP',
+    const response = {
+      candidates: [
+        {
+          content: {
+            role: 'model',
+            parts: [
+              {
+                functionCall: { name: 'read_file', args: { path: '/etc/hosts' } },
+                thoughtSignature: 'opaque-base64-blob==',
+              },
+            ],
           },
-        ],
-      },
-    } as unknown as GenerateContentResult;
+          finishReason: 'STOP',
+        },
+      ],
+    };
 
-    const std = provider.testTransformResponse(result, 'gemini-3.1-pro-preview');
+    const std = provider.testTransformResponse(response, 'gemini-3.1-pro-preview');
     const capturedToolCall = std.choices[0].message.tool_calls![0] as ToolCall;
     expect(capturedToolCall.thought_signature).toBe('opaque-base64-blob==');
 
-    // 2. Client echoes it back in the next turn
     const nextParams: StandardChatParams = {
       model: 'gemini-3.1-pro-preview',
       messages: [
@@ -375,7 +364,6 @@ describe('GeminiProvider thought_signature round-trip', () => {
     const fcPart = modelContent.parts.find((p: any) => p.functionCall) as any;
 
     expect(fcPart.thoughtSignature).toBe('opaque-base64-blob==');
-    // Make absolutely sure the signature is NOT inside functionCall
     expect(fcPart.functionCall.thoughtSignature).toBeUndefined();
   });
 });

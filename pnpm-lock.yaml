@@ -18,9 +18,9 @@ importers:
       '@google-cloud/vertexai':
         specifier: ^1.9.0
         version: 1.10.4
-      '@google/generative-ai':
-        specifier: ^0.21.0
-        version: 0.21.0
+      '@google/genai':
+        specifier: ^1.0.0
+        version: 1.48.0
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.17
@@ -348,10 +348,6 @@ packages:
     peerDependenciesMeta:
       '@modelcontextprotocol/sdk':
         optional: true
-
-  '@google/generative-ai@0.21.0':
-    resolution: {integrity: sha512-7XhUbtnlkSEZK15kN3t+tzIMxsbKm/dSkKBFalj+20NvPKe1kBY7mR2P7vuijEn+f06z5+A8bVGKO0v39cr6Wg==}
-    engines: {node: '>=18.0.0'}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -1378,8 +1374,6 @@ snapshots:
       - bufferutil
       - supports-color
       - utf-8-validate
-
-  '@google/generative-ai@0.21.0': {}
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:

@@ -1,12 +1,4 @@
-import type {
-  GoogleGenerativeAI,
-  GenerativeModel,
-  Content,
-  Part,
-  FunctionCallingMode,
-  GenerateContentResult,
-  EnhancedGenerateContentResponse,
-} from '@google/generative-ai';
+import type { GoogleGenAI as GoogleGenAIType } from '@google/genai';
 import { BaseProvider } from '../core/base-provider.js';
 import { LLMError, LLMErrorCode } from '../core/errors.js';
 import { sanitizeGeminiSchema } from './gemini-schema.js';
@@ -15,64 +7,59 @@ import type {
   StandardChatResponse,
   StandardChatChunk,
   ProviderConfig,
-  Message,
-  ToolDefinition,
   ToolCall,
 } from '../core/types.js';
 
 export class GeminiProvider extends BaseProvider {
   public readonly providerName = 'gemini';
-  protected genAI: GoogleGenerativeAI;
+  protected genAI: GoogleGenAIType;
 
   constructor(config: ProviderConfig) {
     super(config);
-    const GeminiModule = require('@google/generative-ai') as typeof import('@google/generative-ai');
-    this.genAI = new GeminiModule.GoogleGenerativeAI(config.apiKey);
+    const GeminiModule = require('@google/genai') as typeof import('@google/genai');
+    this.genAI = new GeminiModule.GoogleGenAI({ apiKey: config.apiKey });
   }
 
   protected async doChat(params: StandardChatParams): Promise<StandardChatResponse> {
-    const model = this.getModel(params);
     const { contents, systemInstruction } = this.transformRequest(params);
+    const config = this.buildConfig(params);
+    if (systemInstruction) config.systemInstruction = systemInstruction;
 
-    const result = await model.generateContent({
+    const response = await this.genAI.models.generateContent({
+      model: params.model,
       contents,
-      ...(systemInstruction ? { systemInstruction } : {}),
+      config,
     });
 
-    return this.transformResponse(result, params.model);
+    return this.transformResponse(response, params.model);
   }
 
   protected async *doStream(params: StandardChatParams): AsyncIterable<StandardChatChunk> {
-    const model = this.getModel(params);
     const { contents, systemInstruction } = this.transformRequest(params);
+    const config = this.buildConfig(params);
+    if (systemInstruction) config.systemInstruction = systemInstruction;
 
-    const result = await model.generateContentStream({
+    const stream = await this.genAI.models.generateContentStream({
+      model: params.model,
       contents,
-      ...(systemInstruction ? { systemInstruction } : {}),
+      config,
     });
 
     const id = this.generateId();
     const created = Math.floor(Date.now() / 1000);
     let emittedRole = false;
-    // Gemini streams are cumulative for tool calls — the same functionCall
-    // part can re-appear in every subsequent chunk. Track emitted ones so
-    // the aggregator does not concatenate identical JSON into invalid args.
     const emittedToolCallKeys = new Set<string>();
     let emittedToolCallIndex = 0;
 
-    for await (const chunk of result.stream) {
-      const candidate = chunk.candidates?.[0];
+    for await (const chunk of stream) {
+      const candidate = (chunk as any).candidates?.[0];
       if (!candidate) continue;
 
       const parts = candidate.content?.parts ?? [];
       const toolCalls: StandardChatChunk['choices'][0]['delta']['tool_calls'] = [];
 
-      // Gemini text streaming is INCREMENTAL per chunk — each chunk's parts
-      // contain only the new text since the last chunk, not the cumulative
-      // total. Emit `textDelta` directly; do not slice against prior state.
       let textDelta = '';
       for (const part of parts) {
-        // Skip thought parts — those are the model's internal reasoning, not the answer.
         if ((part as any).thought === true) continue;
         if ('text' in part && part.text) {
           textDelta += part.text;
@@ -116,10 +103,10 @@ export class GeminiProvider extends BaseProvider {
           delta,
           finish_reason: finishReason,
         }],
-        usage: chunk.usageMetadata ? {
-          prompt_tokens: chunk.usageMetadata.promptTokenCount ?? 0,
-          completion_tokens: chunk.usageMetadata.candidatesTokenCount ?? 0,
-          total_tokens: chunk.usageMetadata.totalTokenCount ?? 0,
+        usage: (chunk as any).usageMetadata ? {
+          prompt_tokens: (chunk as any).usageMetadata.promptTokenCount ?? 0,
+          completion_tokens: (chunk as any).usageMetadata.candidatesTokenCount ?? 0,
+          total_tokens: (chunk as any).usageMetadata.totalTokenCount ?? 0,
         } : undefined,
       };
     }
@@ -151,40 +138,20 @@ export class GeminiProvider extends BaseProvider {
     return new LLMError(String(error), LLMErrorCode.UNKNOWN, this.providerName);
   }
 
-  // --- Protected helpers (reusable by VertexGeminiProvider) ---
+  // --- Protected helpers ---
 
-  protected getModel(params: StandardChatParams): GenerativeModel {
-    const modelConfig: Record<string, unknown> = {
-      model: params.model,
-    };
+  protected buildConfig(params: StandardChatParams): Record<string, any> {
+    const config: Record<string, any> = {};
 
-    if (params.temperature !== undefined) {
-      modelConfig.generationConfig = {
-        ...(modelConfig.generationConfig as Record<string, unknown> ?? {}),
-        temperature: params.temperature,
-      };
-    }
-    if (params.max_tokens !== undefined) {
-      modelConfig.generationConfig = {
-        ...(modelConfig.generationConfig as Record<string, unknown> ?? {}),
-        maxOutputTokens: params.max_tokens,
-      };
-    }
-    if (params.top_p !== undefined) {
-      modelConfig.generationConfig = {
-        ...(modelConfig.generationConfig as Record<string, unknown> ?? {}),
-        topP: params.top_p,
-      };
-    }
+    if (params.temperature !== undefined) config.temperature = params.temperature;
+    if (params.max_tokens !== undefined) config.maxOutputTokens = params.max_tokens;
+    if (params.top_p !== undefined) config.topP = params.top_p;
     if (params.stop) {
-      modelConfig.generationConfig = {
-        ...(modelConfig.generationConfig as Record<string, unknown> ?? {}),
-        stopSequences: Array.isArray(params.stop) ? params.stop : [params.stop],
-      };
+      config.stopSequences = Array.isArray(params.stop) ? params.stop : [params.stop];
     }
 
     if (params.tools?.length) {
-      modelConfig.tools = [{
+      config.tools = [{
         functionDeclarations: params.tools.map(t => ({
           name: t.function.name,
           description: t.function.description,
@@ -193,7 +160,7 @@ export class GeminiProvider extends BaseProvider {
       }];
 
       if (params.tool_choice) {
-        modelConfig.toolConfig = {
+        config.toolConfig = {
           functionCallingConfig: {
             mode: this.mapToolChoice(params.tool_choice),
           },
@@ -201,15 +168,15 @@ export class GeminiProvider extends BaseProvider {
       }
     }
 
-    return this.genAI.getGenerativeModel(modelConfig as any);
+    return config;
   }
 
   protected transformRequest(params: StandardChatParams): {
-    contents: Content[];
+    contents: Array<{ role: string; parts: Array<Record<string, any>> }>;
     systemInstruction?: string;
   } {
     const systemParts: string[] = [];
-    const contents: Content[] = [];
+    const contents: Array<{ role: string; parts: Array<Record<string, any>> }> = [];
 
     for (const msg of params.messages) {
       if (msg.role === 'system') {
@@ -220,21 +187,19 @@ export class GeminiProvider extends BaseProvider {
       }
 
       if (msg.role === 'tool') {
-        // Tool results become function response parts
-        const functionResponse: Part = {
+        const functionResponse: Record<string, any> = {
           functionResponse: {
             name: msg.name ?? 'unknown',
             response: { result: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content) },
           },
-        } as Part;
+        };
 
-        // Group with previous function role or create new
         const lastContent = contents[contents.length - 1];
         if (lastContent && lastContent.role === 'function') {
           lastContent.parts.push(functionResponse);
         } else {
           contents.push({
-            role: 'function' as any,
+            role: 'function',
             parts: [functionResponse],
           });
         }
@@ -242,9 +207,8 @@ export class GeminiProvider extends BaseProvider {
       }
 
       const geminiRole = msg.role === 'assistant' ? 'model' : 'user';
-      const parts: Part[] = [];
+      const parts: Array<Record<string, any>> = [];
 
-      // Handle content
       if (typeof msg.content === 'string' && msg.content) {
         parts.push({ text: msg.content });
       } else if (Array.isArray(msg.content)) {
@@ -252,30 +216,25 @@ export class GeminiProvider extends BaseProvider {
           if (part.type === 'text') {
             parts.push({ text: part.text });
           }
-          // Image parts could be mapped here in the future
         }
       }
 
-      // Handle tool calls in assistant messages.
-      // Gemini 3.x REQUIRES thought_signature on every functionCall part.
-      // Skip function call parts that lost their signature (e.g. replayed
-      // from session history) to avoid a 400 error.
       if (msg.tool_calls) {
         for (const tc of msg.tool_calls) {
-          if (!tc.thought_signature) continue;
           const part: any = {
             functionCall: {
               name: tc.function.name,
               args: JSON.parse(tc.function.arguments),
             },
-            thoughtSignature: tc.thought_signature,
           };
-          parts.push(part as Part);
+          if (tc.thought_signature) {
+            part.thoughtSignature = tc.thought_signature;
+          }
+          parts.push(part);
         }
       }
 
       if (parts.length > 0) {
-        // Merge consecutive same-role messages
         const lastContent = contents[contents.length - 1];
         if (lastContent && lastContent.role === geminiRole) {
           lastContent.parts.push(...parts);
@@ -291,8 +250,7 @@ export class GeminiProvider extends BaseProvider {
     };
   }
 
-  protected transformResponse(result: GenerateContentResult, model: string): StandardChatResponse {
-    const response = result.response;
+  protected transformResponse(response: any, model: string): StandardChatResponse {
     const candidate = response.candidates?.[0];
 
     let textContent = '';
@@ -300,7 +258,6 @@ export class GeminiProvider extends BaseProvider {
 
     if (candidate?.content?.parts) {
       for (const part of candidate.content.parts) {
-        // Skip thought parts — those are internal reasoning, not the answer.
         if ((part as any).thought === true) continue;
         if ('text' in part && part.text) {
           textContent += part.text;
