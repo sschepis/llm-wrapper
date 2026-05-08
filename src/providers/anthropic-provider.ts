@@ -270,24 +270,33 @@ export class AnthropicProvider extends BaseProvider {
 
   // --- Private helpers ---
 
-  private extractSystemMessages(messages: Message[]): { system: string | undefined; messages: Message[] } {
-    const systemMessages: string[] = [];
+  private extractSystemMessages(messages: Message[]): { system: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> | undefined; messages: Message[] } {
+    const systemParts: string[] = [];
     const nonSystemMessages: Message[] = [];
 
     for (const msg of messages) {
       if (msg.role === 'system') {
         if (typeof msg.content === 'string') {
-          systemMessages.push(msg.content);
+          systemParts.push(msg.content);
         }
       } else {
         nonSystemMessages.push(msg);
       }
     }
 
-    return {
-      system: systemMessages.length > 0 ? systemMessages.join('\n\n') : undefined,
-      messages: nonSystemMessages,
-    };
+    if (systemParts.length === 0) {
+      return { system: undefined, messages: nonSystemMessages };
+    }
+
+    const blocks = systemParts.map((text, i) => {
+      const block: { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } } = { type: 'text', text };
+      if (i === systemParts.length - 1) {
+        block.cache_control = { type: 'ephemeral' };
+      }
+      return block;
+    });
+
+    return { system: blocks, messages: nonSystemMessages };
   }
 
   private convertMessages(messages: Message[]): Array<Record<string, unknown>> {
@@ -350,11 +359,17 @@ export class AnthropicProvider extends BaseProvider {
   }
 
   private convertToolDefinitions(tools: ToolDefinition[]): Array<Record<string, unknown>> {
-    return tools.map(tool => ({
-      name: tool.function.name,
-      description: tool.function.description,
-      input_schema: tool.function.parameters,
-    }));
+    return tools.map((tool, i) => {
+      const def: Record<string, unknown> = {
+        name: tool.function.name,
+        description: tool.function.description,
+        input_schema: tool.function.parameters,
+      };
+      if (i === tools.length - 1) {
+        def.cache_control = { type: 'ephemeral' };
+      }
+      return def;
+    });
   }
 
   private convertToolChoice(choice: StandardChatParams['tool_choice']): Record<string, unknown> {
